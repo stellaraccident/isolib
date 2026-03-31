@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install isolib
+        run: pip install -e .
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -v
+
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            binutils \
+            ninja-build \
+            meson \
+            pkg-config \
+            autoconf \
+            automake \
+            libtool \
+            gettext \
+            autopoint
+
+      - name: Install isolib + pytest
+        run: pip install -e . pytest
+
+      - name: Cache sysdep sources and builds
+        uses: actions/cache@v4
+        with:
+          path: .cache/isolib
+          key: isolib-sysdeps-${{ hashFiles('integration/test_*.py') }}
+          restore-keys: |
+            isolib-sysdeps-
+
+      - name: Run integration tests
+        run: python -m pytest integration/ -v --tb=short
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolib-dump
+          path: /tmp/isolib-dump/
+          retention-days: 7
