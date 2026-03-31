@@ -1,4 +1,8 @@
-"""Integration test infrastructure: download, build, cache real sysdep libraries."""
+"""Integration test infrastructure: download, build, cache real sysdep libraries.
+
+Use --dump-artifacts=/path to copy before/after .so files for inspection:
+    pytest integration/ --dump-artifacts=/tmp/isolib-dump
+"""
 
 from __future__ import annotations
 
@@ -13,6 +17,71 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 import pytest
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--dump-artifacts",
+        default=None,
+        help="Directory to dump before/after .so files for inspection",
+    )
+
+
+@pytest.fixture(scope="session")
+def dump_dir(request: pytest.FixtureRequest) -> Path | None:
+    """If --dump-artifacts is set, return the dump directory (created)."""
+    val = request.config.getoption("--dump-artifacts")
+    if val is None:
+        return None
+    p = Path(val)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+@pytest.fixture(autouse=True)
+def _dump_isolation_artifacts(request: pytest.FixtureRequest, dump_dir: Path | None) -> None:
+    """Auto-dump before/after artifacts when --dump-artifacts is set.
+
+    For any test that uses a `*_built` and `*_isolated` fixture, copies:
+      <dump_dir>/<lib>/before/<original.so>
+      <dump_dir>/<lib>/after/<prefixed.so>
+      <dump_dir>/<lib>/after/<stubs.a>
+      <dump_dir>/<lib>/after/<linker_script>
+      <dump_dir>/<lib>/after/<redirect.h>
+    """
+    if dump_dir is None:
+        return
+
+    # Look for *_built and *_isolated fixtures in the test's scope
+    for name in list(request.fixturenames):
+        if name.endswith("_built"):
+            lib_name = name.removesuffix("_built")
+            iso_name = f"{lib_name}_isolated"
+            if iso_name not in request.fixturenames:
+                continue
+
+            try:
+                built = request.getfixturevalue(name)
+                _, result = request.getfixturevalue(iso_name)
+            except Exception:
+                continue
+
+            lib_dir = dump_dir / lib_name
+            before = lib_dir / "before"
+            after = lib_dir / "after"
+            before.mkdir(parents=True, exist_ok=True)
+            after.mkdir(parents=True, exist_ok=True)
+
+            # Copy original
+            if hasattr(built, "so_path") and built.so_path.exists():
+                shutil.copy2(built.so_path, before / built.so_path.name)
+
+            # Copy isolated artifacts
+            for attr in ("prefixed_so", "stubs_archive", "linker_script", "redirect_header"):
+                p = getattr(result, attr, None)
+                if p and p.exists():
+                    shutil.copy2(p, after / p.name)
+            break  # Only one library per test class
 
 # Cache directory for downloaded sources and built artifacts
 CACHE_DIR = Path(os.environ.get(
@@ -156,7 +225,12 @@ def build_autotools_library(
     if env_extra:
         env.update(env_extra)
 
-    args = [str(source_dir / "configure"), f"--prefix={install_dir}"]
+    configure = source_dir / "configure"
+    # Ensure configure is executable (zip archives lose permissions)
+    if configure.exists() and not os.access(configure, os.X_OK):
+        configure.chmod(0o755)
+
+    args = [str(configure), f"--prefix={install_dir}"]
     if configure_args:
         args.extend(configure_args)
 
