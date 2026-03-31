@@ -167,12 +167,32 @@ def classify_symbol(
 ) -> tuple[bool, IsolationWarning | None]:
     """Decide whether a symbol should be prefixed.
 
+    Only DEFINED, GLOBAL/WEAK, DEFAULT/PROTECTED symbols are candidates
+    for renaming. This means:
+
+    - Undefined (UND) symbols are never renamed. These are imports that
+      the library expects the runtime linker to resolve from other DSOs.
+      This includes:
+
+      * Standard libc imports (malloc, printf, etc.)
+      * Weak undefined "hook" symbols (e.g. ZSTD_trace_compress_begin)
+        that libraries use as optional callbacks. These are deliberately
+        left unresolved — if a consumer provides them, they bind in.
+        Renaming these would break the hook mechanism. The existing
+        -Bsymbolic flag (applied by TheRock) ensures that defined
+        symbols within the library still resolve internally, so these
+        weak imports are the only deliberate external binding point.
+
+    - CRT/glibc symbols (malloc, pthread_*, etc.) are excluded even if
+      defined, to avoid breaking fundamental runtime linkage.
+
     Returns:
         (should_prefix, optional_warning)
         - should_prefix: True if the symbol should be renamed
         - warning: non-None if the symbol triggers a diagnostic
     """
     # Only prefix defined, exported symbols.
+    # Undefined symbols (imports) are never renamed — see docstring.
     if not sym.is_exportable:
         return False, None
 
